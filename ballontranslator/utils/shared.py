@@ -1,4 +1,4 @@
-from typing import Dict
+from typing import Dict, Iterable, List, Optional
 import os
 import os.path as osp
 import json
@@ -31,8 +31,8 @@ LOGGING_PATH = osp.join(PROGRAM_PATH, 'logs')
 
 LIBS_PATH = osp.join(PROGRAM_PATH, 'data/libs')
 
-STYLESHEET_PATH = osp.join(PROGRAM_PATH, 'config/stylesheet.css')
-THEME_PATH = osp.join(PROGRAM_PATH, 'config/themes.json')
+STYLESHEET_PATH = osp.join(RESOURCE_DIR, 'stylesheet.css')
+THEME_PATH = osp.join(RESOURCE_DIR, 'themes.json')
 CONFIG_PATH = osp.join(PROGRAM_PATH, 'config/config.json')
 
 DEFAULT_TEXTSTYLE_DIR = osp.join(PROGRAM_PATH, 'config/textstyles')
@@ -40,14 +40,17 @@ if not osp.exists(DEFAULT_TEXTSTYLE_DIR):
     os.makedirs(DEFAULT_TEXTSTYLE_DIR)
 
 
-CONFIG_FONTSIZE_HEADER = 18
-CONFIG_FONTSIZE_TABLE = 16
-CONFIG_FONTSIZE_CONTENT = 16
+CONFIG_FONTSIZE_HEADER = 15
+CONFIG_FONTSIZE_TABLE = 13
+CONFIG_FONTSIZE_CONTENT = 13
+CONFIG_CONTENT_MARGIN = 27
+CONFIG_CONTENT_MARGINS = (CONFIG_CONTENT_MARGIN,) * 4
+CONFIG_CONTENT_ROW_SPACING = 6
 
-CONFIG_COMBOBOX_HEIGHT = 30 
-CONFIG_COMBOBOX_SHORT = 200
-CONFIG_COMBOBOX_MIDEAN = 332
-CONFIG_COMBOBOX_LONG = 468
+CONFIG_COMBOBOX_HEIGHT = 26
+CONFIG_COMBOBOX_SHORT = 180
+CONFIG_COMBOBOX_MIDEAN = 300
+CONFIG_COMBOBOX_LONG = 420
 
 _size2width = {
     'short': CONFIG_COMBOBOX_SHORT,
@@ -90,6 +93,8 @@ FLAG_QT6 = True
 
 SLIDERHANDLE_COLOR = (85,85,96)
 FOREGROUND_FONTCOLOR = (93,93,95)
+BORDER_COLOR = (179,182,191)
+WIDGET_BACKGROUND_COLOR = (235,238,245)
 
 MAX_NUM_LOG = 7
 
@@ -97,6 +102,7 @@ TRANSLATE_DIR = osp.join(RESOURCE_DIR, 'translate')
 DISPLAY_LANGUAGE_MAP = {
     "English": "English",
     "简体中文": "zh_CN",
+    "繁體中文": "zh_TW",
     "Русский": "ru_RU",
     "Português (Brasil)": "pt_BR",
     "한국어": "ko_KR",
@@ -117,9 +123,29 @@ DEFAULT_DISPLAY_LANG = 'English'
 USE_PYSIDE6 = False
 ON_MACOS = sys.platform == 'darwin'
 ON_WINDOWS = sys.platform == 'win32'
+
+def _detect_apple_silicon() -> bool:
+    if not ON_MACOS:
+        return False
+    import platform
+    if platform.machine().lower() in {'arm64', 'aarch64'}:
+        return True
+    try:
+        import subprocess
+        out = subprocess.run(
+            ['sysctl', '-n', 'hw.optional.arm64'],
+            capture_output=True, text=True, timeout=2,
+        )
+        return out.stdout.strip() == '1'
+    except Exception:
+        return False
+
+ON_APPLE_SILICON = _detect_apple_silicon()
 HEADLESS = False
 DEBUG = False
 args = None
+TORCH_INSTALL_PREFERRED_DEVICE = None
+TORCH_INSTALL_PREFERRED_PROFILE = None
 
 FUZZY_MATCH_IMAGE_NAME = False
 
@@ -129,8 +155,34 @@ cache_path: str = osp.join(PROGRAM_PATH, '.btrans_cache/cache.json')
 CACHE_UPDATED = False
 check_local_file_hash = True
 
+FONT_REGISTRY = None
 FONT_FAMILIES: set = None
-CUSTOM_FONTS = []
+# Windows 自带的老旧字体：渲染时可能触发 DirectWrite CreateFontFaceFromHDC 告警
+LEGACY_FONTS = frozenset({
+    "MS Sans Serif", "MS Serif", "Small Fonts",
+    "System", "Fixedsys", "Terminal",
+    "Courier", "Modern", "Roman", "Script",
+})
+
+
+def get_filtered_font_list(
+    font_list: Iterable[str],
+    excluded: Optional[Iterable[str]] = None,
+) -> List[str]:
+    """Return a sorted font list without the excluded names.
+
+    >>> get_filtered_font_list(['Times', 'Arial', 'Courier'], ['Times'])
+    ['Arial', 'Courier']
+    >>> get_filtered_font_list(['Arial', 'Times'])
+    ['Arial', 'Times']
+    """
+    excluded_set = set(excluded or ())
+    return sorted(
+        (font for font in font_list if font not in excluded_set),
+        key=str.casefold,
+    )
+
+
 pbar = {}
 runtime_widget_set = set()
 
@@ -147,6 +199,12 @@ showed_exception = set()
 create_errdialog_in_mainthread = lambda *args, **kwargs: None
 
 create_infodialog_in_mainthread = lambda *args, **kwargs: None
+
+show_llm_key_dialog_in_mainthread = lambda *args, **kwargs: None
+
+show_llm_model_dialog_in_mainthread = lambda *args, **kwargs: None
+
+show_llm_base_url_dialog_in_mainthread = lambda *args, **kwargs: None
 
 def load_cache():
     global cache_data

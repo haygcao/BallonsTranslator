@@ -1,5 +1,5 @@
 import sys
-from typing import List
+from typing import List, Tuple
 
 import cv2
 import numpy as np
@@ -92,7 +92,8 @@ class AOTInpainter(InpainterBase):
                 1024, 
                 2048
             ], 
-            'value': 2048
+            'value': 2048,
+            'display_name': 'Inpaint Size'
         }, 
         'device': DEVICE_SELECTOR(),
         'description': 'manga-image-translator inpainter'
@@ -104,7 +105,7 @@ class AOTInpainter(InpainterBase):
     _load_model_keys = {'model'}
 
     download_file_list = [{
-            'url': 'https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting.ckpt',
+            'url': 'https://huggingface.co/dreMaz/mit_models/resolve/main/aot_inpainter.ckpt',
             'sha256_pre_calculated': '878d541c68648969bc1b042a6e997f3a58e49b6c07c5636ad55130736977149f',
             'files': 'data/models/aot_inpainter.ckpt',
     }]
@@ -198,13 +199,14 @@ class LamaInpainterMPE(InpainterBase):
                 1024, 
                 2048
             ], 
-            'value': 2048
+            'value': 2048,
+            'display_name': 'Inpaint Size'
         },
         'device': DEVICE_SELECTOR(not_supported=['privateuseone'])
     }
 
     download_file_list = [{
-            'url': 'https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting_lama_mpe.ckpt',
+            'url': 'https://huggingface.co/dreMaz/mit_models/resolve/main/lama_mpe.ckpt',
             'sha256_pre_calculated': 'd625aa1b3e0d0408acfd6928aa84f005867aa8dbb9162480346a4e20660786cc',
             'files': 'data/models/lama_mpe.ckpt',
     }]
@@ -221,7 +223,17 @@ class LamaInpainterMPE(InpainterBase):
         from .lama import load_lama_mpe
         self.model = load_lama_mpe(r'data/models/lama_mpe.ckpt', self.device)
 
-    def inpaint_preprocess(self, img: np.ndarray, mask: np.ndarray) -> np.ndarray:
+    def inpaint_preprocess(
+        self, img: np.ndarray, mask: np.ndarray,
+    ) -> Tuple[
+        'torch.Tensor', 'torch.Tensor', 'torch.Tensor', 'torch.Tensor',
+        np.ndarray, np.ndarray, int, int,
+    ]:
+        """Pad to a 64-aligned square after applying the configured size limit.
+
+        >>> (max(786, 172) + 63) // 64 * 64
+        832
+        """
 
         img_original = np.copy(img)
         mask_original = np.copy(mask)
@@ -231,13 +243,14 @@ class LamaInpainterMPE(InpainterBase):
 
         new_shape = self.inpaint_size if max(img.shape[0: 2]) > self.inpaint_size else None
         # high resolution input could produce cloudy artifacts
-        img = resize_keepasp(img, new_shape, stride=64)
-        mask = resize_keepasp(mask, new_shape, stride=64)
+        img = resize_keepasp(img, new_shape, stride=None)
+        mask = resize_keepasp(mask, new_shape, stride=None)
 
         im_h, im_w = img.shape[:2]
-        longer = max(im_h, im_w)
-        pad_bottom = longer - im_h if im_h < longer else 0
-        pad_right = longer - im_w if im_w < longer else 0
+        # Align by padding, not resampling, to preserve screentones and mask edges.
+        longer = (max(im_h, im_w) + 63) // 64 * 64
+        pad_bottom = longer - im_h
+        pad_right = longer - im_w
         mask = cv2.copyMakeBorder(mask, 0, pad_bottom, 0, pad_right, cv2.BORDER_REFLECT)
         img = cv2.copyMakeBorder(img, 0, pad_bottom, 0, pad_right, cv2.BORDER_REFLECT)
 
@@ -326,6 +339,7 @@ class LamaLarge(LamaInpainterMPE):
                 2048
             ], 
             'value': 1536,
+            'display_name': 'Inpaint Size'
         },
         'device': DEVICE_SELECTOR(not_supported=['privateuseone']),
         'precision': {
@@ -370,6 +384,8 @@ class Flux2Klein(InpainterBase):
         'safetensors',
         'transformers==4.57.6',
         'gguf>=0.10.0',
+        'accelerate>=0.26.0',
+        'hf_transfer'
     ]
 
     params = {
@@ -390,15 +406,23 @@ class Flux2Klein(InpainterBase):
                 1536,
                 2048
             ], 
-            'value': 1024
+            'value': 1024,
+            'display_name': 'Max Resolution'
         }, 
         'device': DEVICE_SELECTOR(),
         'step': 8
     }
-    check_need_inpaint = False
     inpaint_by_block = False
 
     download_file_list = [
+            {
+                'url': 'https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/main/model_index.json',
+                'files': 'data/models/flux-2-klein-4b/model_index.json',
+            },
+            {
+                'url': 'https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/main/scheduler/scheduler_config.json',
+                'files': 'data/models/flux-2-klein-4b/scheduler/scheduler_config.json'
+            },
             {
                 'url': 'https://huggingface.co/black-forest-labs/FLUX.2-klein-4B/resolve/main/transformer/config.json',
                 'files': 'data/models/flux-2-klein-4b/transformer/config.json',
@@ -442,17 +466,19 @@ class Flux2Klein(InpainterBase):
             "data/models/flux-2-klein-4b-Q4_K_M.gguf",
             quantization_config=GGUFQuantizationConfig(compute_dtype=torch.bfloat16),
             torch_dtype=torch.bfloat16,
-            config='data/models/flux-2-klein-4b/transformer/config.json'
+            config='data/models/flux-2-klein-4b/transformer/config.json',
+            
         )
         self.prompt_embeds = load_file('data/models/flux2_inpaint_prompt.safetensors')['prompt_embeds'].to(dtype=torch.bfloat16, device=self.get_param_value('device'))
 
         vae = AutoencoderKLFlux2.from_pretrained(f'data/models/flux-2-vae').to(device=self.get_param_value('device'), dtype=torch.bfloat16)
         pipeline = Flux2KleinInpaintPipeline.from_pretrained(
-            pretrained_model_name_or_path=source,
+            pretrained_model_name_or_path='data/models/flux-2-klein-4b',
             text_encoder=None,
             tokenizer=None,
             vae=vae,
-            transformer=transformer
+            transformer=transformer,
+            local_files_only=True
         )
         self.pipeline = pipeline.to(device=self.get_param_value('device'), )
 

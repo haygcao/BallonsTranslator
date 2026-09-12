@@ -1,8 +1,9 @@
-from qtpy.QtCore import Signal, Qt, QPointF, QSize, QSizeF, QLineF, QRectF
-from qtpy.QtWidgets import QGridLayout, QPushButton, QComboBox, QSizePolicy, QBoxLayout, QCheckBox, QHBoxLayout, QGraphicsView, QStackedWidget, QVBoxLayout, QLabel, QGraphicsPixmapItem, QGraphicsEllipseItem
-from qtpy.QtGui import QPen, QColor, QCursor, QPainter, QPixmap, QBrush, QFontMetrics
+from qtpy.QtCore import Signal, Qt, QPointF, QSize, QSizeF, QLineF, QRectF, QSignalBlocker
+from qtpy.QtWidgets import QAbstractSpinBox, QGridLayout, QPushButton, QComboBox, QSizePolicy, QBoxLayout, QCheckBox, QHBoxLayout, QGraphicsView, QSpinBox, QStackedWidget, QVBoxLayout, QLabel, QGraphicsPixmapItem, QGraphicsEllipseItem
+from qtpy.QtGui import QIcon, QPen, QColor, QCursor, QPainter, QPixmap, QBrush, QFontMetrics
 
 from typing import Union, Tuple, List
+from math import log
 import numpy as np
 import cv2
 
@@ -13,10 +14,9 @@ from ballontranslator.utils.config import pcfg
 from .funcmaps import get_maskseg_method
 from .module_manager import ModuleManager
 from .image_edit import ImageEditMode, PenShape, PixmapItem, StrokeImgItem
-from .configpanel import InpaintConfigPanel
 from .custom_widget import Widget, SeparatorWidget, PaintQSlider, ColorPickerLabel
 from .canvas import Canvas
-from .misc import ndarray2pixmap
+from .misc import ndarray2pixmap, themed_icon_path
 from ballontranslator.utils.config import DrawPanelConfig, pcfg
 from ballontranslator.utils.shared import CONFIG_COMBOBOX_SHORT, CONFIG_COMBOBOX_HEIGHT
 from ballontranslator.utils.logger import logger as LOGGER
@@ -26,6 +26,55 @@ INPAINT_BRUSH_COLOR = QColor(127, 0, 127, 127)
 MAX_PEN_SIZE = 1000
 MIN_PEN_SIZE = 1
 TOOLNAME_POINT_SIZE = 13
+
+
+class _BrushThicknessSlider(PaintQSlider):
+    """Keep exact pixel values while spacing brush sizes logarithmically."""
+
+    def _value_to_position_ratio(self) -> float:
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if minimum < 1 or maximum <= minimum:
+            return super()._value_to_position_ratio()
+        return log(self.value() / minimum) / log(maximum / minimum)
+
+    def _position_ratio_to_value(self, ratio: float) -> int:
+        minimum = self.minimum()
+        maximum = self.maximum()
+        if minimum < 1 or maximum <= minimum:
+            return super()._position_ratio_to_value(ratio)
+        ratio = min(max(ratio, 0.0), 1.0)
+        return round(minimum * (maximum / minimum) ** ratio)
+
+
+def _create_thickness_control(
+    parent: Widget,
+) -> tuple[_BrushThicknessSlider, QSpinBox, QHBoxLayout]:
+    slider = _BrushThicknessSlider(parent=parent)
+    slider.setRange(MIN_PEN_SIZE, MAX_PEN_SIZE)
+    slider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+    slider.show_hover_value = False
+
+    spinbox = QSpinBox(parent)
+    spinbox.setProperty('paintSliderValueEditor', True)
+    spinbox.setRange(MIN_PEN_SIZE, MAX_PEN_SIZE)
+    spinbox.setValue(slider.value())
+    spinbox.setSuffix(' px')
+    spinbox.setAlignment(Qt.AlignmentFlag.AlignCenter)
+    button_symbols = getattr(
+        QAbstractSpinBox, 'ButtonSymbols', QAbstractSpinBox
+    )
+    spinbox.setButtonSymbols(button_symbols.NoButtons)
+    spinbox.setKeyboardTracking(False)
+    spinbox.setFixedSize(60, 22)
+
+    layout = QHBoxLayout()
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(slider, 1)
+    layout.addWidget(spinbox)
+    return slider, spinbox, layout
+
 
 class DrawToolCheckBox(QCheckBox):
     checked = Signal()
@@ -56,24 +105,72 @@ class ToolNameLabel(QLabel):
                 font_size = TOOLNAME_POINT_SIZE * fix_width * 0.95 / text_width
                 font.setPointSizeF(font_size)
         self.setFont(font)
-            
+
+
+class InpainterSelectorRow(Widget):
+    """An independently owned selector for the one global inpainter choice.
+
+    >>> InpainterSelectorRow.__name__
+    'InpainterSelectorRow'
+    """
+
+    selection_changed = Signal(str)
+    config_requested = Signal()
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(ToolNameLabel(100, self.tr('Inpainter')))
+        self.selector = QComboBox(self)
+        self.selector.setFixedHeight(CONFIG_COMBOBOX_HEIGHT)
+        self.selector.setFixedWidth(CONFIG_COMBOBOX_SHORT)
+        self.selector.currentTextChanged.connect(self.selection_changed)
+        layout.addWidget(self.selector)
+        self.config_button = QPushButton(self)
+        self.config_button.setObjectName('DrawingInpainterConfigButton')
+        self.config_button.setFixedSize(24, 24)
+        self.config_button.setIcon(
+            QIcon(themed_icon_path('leftbar_config_activate.svg'))
+        )
+        self.config_button.setToolTip(self.tr('Config'))
+        self.config_button.setAccessibleName(self.tr('Config'))
+        self.config_button.clicked.connect(self.config_requested)
+        layout.addWidget(self.config_button)
+        layout.addStretch()
+
+    def setOptions(self, options, selected: str) -> None:
+        with QSignalBlocker(self.selector):
+            self.selector.clear()
+            self.selector.addItems(options)
+            self.selector.setCurrentText(selected)
+
+    def setSelectedValue(self, value: str) -> None:
+        if self.selector.currentText() == value:
+            return
+        with QSignalBlocker(self.selector):
+            self.selector.setCurrentText(value)
+
 
 class InpaintPanel(Widget):
 
     thicknessChanged = Signal(int)
 
-    def __init__(self, inpainter_panel: InpaintConfigPanel, *args, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
-        self.thicknessSlider = PaintQSlider()
-        self.thicknessSlider.setRange(MIN_PEN_SIZE, MAX_PEN_SIZE)
+        (
+            self.thicknessSlider,
+            self.thicknessSpinBox,
+            thickness_control_layout,
+        ) = _create_thickness_control(self)
         self.thicknessSlider.valueChanged.connect(self.on_thickness_changed)
-        self.thicknessSlider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.thicknessSpinBox.valueChanged.connect(self.on_thickness_changed)
         
         thickness_layout = QHBoxLayout()
         thickness_label = ToolNameLabel(100, self.tr('Thickness'))
         thickness_layout.addWidget(thickness_label)
-        thickness_layout.addWidget(self.thicknessSlider)
+        thickness_layout.addLayout(thickness_control_layout, 1)
         thickness_layout.setSpacing(10)
 
         shape_label = ToolNameLabel(100, self.tr('Shape'))
@@ -88,28 +185,25 @@ class InpaintPanel(Widget):
         shape_layout.addWidget(shape_label)
         shape_layout.addWidget(self.shapeCombobox)
 
-        self.inpaint_layout = inpaint_layout = QHBoxLayout()
-        inpaint_layout.addWidget(ToolNameLabel(100, self.tr('Inpainter')))
-        self.inpainter_panel = inpainter_panel
+        self.inpainter_selector = InpainterSelectorRow(self)
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(inpaint_layout)
+        layout.addWidget(self.inpainter_selector)
         layout.addLayout(thickness_layout)
         layout.addLayout(shape_layout)
         layout.setSpacing(14)
 
-    def on_thickness_changed(self):
-        if self.thicknessSlider.hasFocus():
-            self.thicknessChanged.emit(self.thicknessSlider.value())
-
-    def showEvent(self, e) -> None:
-        self.inpaint_layout.addWidget(self.inpainter_panel.module_combobox)
-        super().showEvent(e)
-
-    def hideEvent(self, e) -> None:
-        self.inpaint_layout.removeWidget(self.inpainter_panel.module_combobox)
-        return super().hideEvent(e)
+    def on_thickness_changed(self, value: int) -> None:
+        sender = self.sender()
+        if sender is self.thicknessSlider:
+            with QSignalBlocker(self.thicknessSpinBox):
+                self.thicknessSpinBox.setValue(value)
+            if self.thicknessSlider.hasFocus():
+                self.thicknessChanged.emit(value)
+        elif sender is self.thicknessSpinBox:
+            self.thicknessSlider.setValue(value)
+            self.thicknessChanged.emit(value)
 
     @property
     def shape(self):
@@ -121,10 +215,13 @@ class PenConfigPanel(Widget):
     colorChanged = Signal(list)
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self.thicknessSlider = PaintQSlider()
-        self.thicknessSlider.setRange(MIN_PEN_SIZE, MAX_PEN_SIZE)
+        (
+            self.thicknessSlider,
+            self.thicknessSpinBox,
+            thickness_control_layout,
+        ) = _create_thickness_control(self)
         self.thicknessSlider.valueChanged.connect(self.on_thickness_changed)
-        self.thicknessSlider.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.thicknessSpinBox.valueChanged.connect(self.on_thickness_changed)
         self.alphaSlider = PaintQSlider()
         self.alphaSlider.setRange(0, 255)
         self.alphaSlider.setValue(255)
@@ -144,7 +241,7 @@ class PenConfigPanel(Widget):
         thickness_layout = QHBoxLayout()
         thickness_label = ToolNameLabel(100, self.tr('Thickness'))
         thickness_layout.addWidget(thickness_label)
-        thickness_layout.addWidget(self.thicknessSlider)
+        thickness_layout.addLayout(thickness_control_layout, 1)
         thickness_layout.setSpacing(10)
 
         shape_label = ToolNameLabel(100, self.tr('Shape'))
@@ -166,9 +263,16 @@ class PenConfigPanel(Widget):
         layout.addLayout(shape_layout)
         layout.setSpacing(20)
 
-    def on_thickness_changed(self):
-        if self.thicknessSlider.hasFocus():
-            self.thicknessChanged.emit(self.thicknessSlider.value())
+    def on_thickness_changed(self, value: int) -> None:
+        sender = self.sender()
+        if sender is self.thicknessSlider:
+            with QSignalBlocker(self.thicknessSpinBox):
+                self.thicknessSpinBox.setValue(value)
+            if self.thicknessSlider.hasFocus():
+                self.thicknessChanged.emit(value)
+        elif sender is self.thicknessSpinBox:
+            self.thicknessSlider.setValue(value)
+            self.thicknessChanged.emit(value)
 
     def on_alpha_changed(self):
         color = self.colorPicker.rgba()
@@ -191,7 +295,7 @@ class RectPanel(Widget):
     method_changed = Signal(int)
     delete_btn_clicked = Signal()
     inpaint_btn_clicked = Signal()
-    def __init__(self, inpainter_panel: InpaintConfigPanel, *args, **kwargs) -> None:
+    def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
 
         self.dilate_label = ToolNameLabel(100, self.tr('Dilate'))
@@ -220,9 +324,7 @@ class RectPanel(Widget):
         self.btnlayout.addWidget(self.inpaint_btn)
         self.btnlayout.addWidget(self.delete_btn)
 
-        self.inpaint_layout = inpaint_layout = QHBoxLayout()
-        inpaint_layout.addWidget(ToolNameLabel(100, self.tr('Inpainter')))
-        self.inpainter_panel = inpainter_panel
+        self.inpainter_selector = InpainterSelectorRow(self)
 
         glayout = QGridLayout()
         glayout.addWidget(self.dilate_label, 0, 0)
@@ -232,19 +334,11 @@ class RectPanel(Widget):
 
         layout = QVBoxLayout(self)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-        layout.addLayout(inpaint_layout)
+        layout.addWidget(self.inpainter_selector)
         layout.addLayout(glayout)
         layout.addLayout(self.btnlayout)
         layout.setSpacing(14)
 
-    def showEvent(self, e) -> None:
-        self.inpaint_layout.addWidget(self.inpainter_panel.module_combobox)
-        super().showEvent(e)
-
-    def hideEvent(self, e) -> None:
-        self.inpaint_layout.removeWidget(self.inpainter_panel.module_combobox)
-        return super().hideEvent(e)
-        
     def on_inpaint_seg_method_changed(self):
         pcfg.drawpanel.rectool_method = self.methodComboBox.currentIndex()
 
@@ -274,8 +368,10 @@ class RectPanel(Widget):
 class DrawingPanel(Widget):
 
     scale_tool_pos: QPointF = None
+    inpainter_changed = Signal(str)
+    inpainter_config_requested = Signal()
 
-    def __init__(self, canvas: Canvas, inpainter_panel: InpaintConfigPanel, *args, **kwargs) -> None:
+    def __init__(self, canvas: Canvas, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self.module_manager: ModuleManager = None
         self.canvas = canvas
@@ -305,7 +401,7 @@ class DrawingPanel(Widget):
         self.inpaintTool = DrawToolCheckBox()
         self.inpaintTool.setObjectName("DrawInpaintTool")
         self.inpaintTool.checked.connect(self.on_use_inpainttool)
-        self.inpaintConfigPanel = InpaintPanel(inpainter_panel)
+        self.inpaintConfigPanel = InpaintPanel()
         self.inpaintConfigPanel.thicknessChanged.connect(self.setInpaintToolWidth)
         self.inpaintConfigPanel.shapeChanged.connect(self.setInpaintShape)
 
@@ -313,10 +409,15 @@ class DrawingPanel(Widget):
         self.rectTool.setObjectName("DrawRectTool")
         self.rectTool.checked.connect(self.on_use_recttool)
         self.rectTool.stateChanged.connect(self.on_rectchecker_changed)
-        self.rectPanel = RectPanel(inpainter_panel)
+        self.rectPanel = RectPanel()
         self.rectPanel.inpaint_btn_clicked.connect(self.on_rect_inpaintbtn_clicked)
         self.rectPanel.delete_btn_clicked.connect(self.on_rect_deletebtn_clicked)
         self.rectPanel.dilate_ksize_changed.connect(self.on_rectool_ksize_changed)
+        for selector_row in self._inpainter_selector_rows():
+            selector_row.selection_changed.connect(self._on_inpainter_changed)
+            selector_row.config_requested.connect(
+                self.inpainter_config_requested
+            )
 
         self.penTool = DrawToolCheckBox()
         self.penTool.setObjectName("DrawPenTool")
@@ -361,6 +462,24 @@ class DrawingPanel(Widget):
         layout.addLayout(masklayout)
         layout.setAlignment(Qt.AlignmentFlag.AlignTop)
 
+    def _inpainter_selector_rows(self):
+        return (
+            self.inpaintConfigPanel.inpainter_selector,
+            self.rectPanel.inpainter_selector,
+        )
+
+    def setInpainterOptions(self, options, selected: str) -> None:
+        for selector_row in self._inpainter_selector_rows():
+            selector_row.setOptions(options, selected)
+
+    def setInpainter(self, inpainter: str) -> None:
+        for selector_row in self._inpainter_selector_rows():
+            selector_row.setSelectedValue(inpainter)
+
+    def _on_inpainter_changed(self, inpainter: str) -> None:
+        self.setInpainter(inpainter)
+        self.inpainter_changed.emit(inpainter)
+
     def setCurrentToolByName(self, tool_name: str):
         try:
             set_method = f'on_use_{tool_name}tool'
@@ -371,7 +490,9 @@ class DrawingPanel(Widget):
         except:
             LOGGER.error(f'{set_method} not found in drawing panel')
 
-    def shortcutSetCurrentToolByName(self, tool_name: str):
+    def shortcutSetCurrentToolByName(self, tool_name: str, key=None):
+        if key is not None and self.canvas.handle_transform_modal_shortcut(key):
+            return
         if self.isVisible():
             self.setCurrentToolByName(tool_name)
 
@@ -426,6 +547,7 @@ class DrawingPanel(Widget):
             self.currentTool.setChecked(False)
         self.currentTool = self.handTool
         pcfg.drawpanel.current_tool = ImageEditMode.HandTool
+        self.canvas.clear_canvas_cursor()
         self.canvas.gv.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
         self.canvas.image_edit_mode = ImageEditMode.HandTool
 
@@ -701,11 +823,13 @@ class DrawingPanel(Widget):
         pen_size = 2 * pen_radius
         self.scale_circle.setRect(0, 0, pen_size, pen_size)
         self.scale_tool_pos = pos - QPointF(pen_size, pen_size)
+        self.scale_circle.setCursor(self.get_pen_cursor(draw_shape=False))
         self.canvas.addItem(self.scale_circle)
-        self.setCrossCursor()
         
-    def setCrossCursor(self):
-        self.canvas.gv.setCursor(self.get_pen_cursor(draw_shape=False))
+    def setCrossCursor(self) -> None:
+        if not self.isVisible() or self.currentTool != self.rectTool:
+            return
+        self.canvas.set_canvas_cursor(self.get_pen_cursor(draw_shape=False))
 
     def on_scale_tool(self, pos: QPointF):
         if self.scale_tool_pos is None:
@@ -738,11 +862,23 @@ class DrawingPanel(Widget):
         elif self.currentTool == self.inpaintTool:
             self.setInpaintCursor()
 
-    def setPenCursor(self):
-        self.canvas.gv.setCursor(self.get_pen_cursor(shape=self.penConfigPanel.shape))
+    def setPenCursor(self) -> None:
+        if not self.isVisible() or self.currentTool != self.penTool:
+            return
+        self.canvas.set_canvas_cursor(
+            self.get_pen_cursor(shape=self.penConfigPanel.shape)
+        )
 
-    def setInpaintCursor(self):
-        self.canvas.gv.setCursor(self.get_pen_cursor(INPAINT_BRUSH_COLOR, self.inpaint_pen.width(), shape=self.inpaintConfigPanel.shape))
+    def setInpaintCursor(self) -> None:
+        if not self.isVisible() or self.currentTool != self.inpaintTool:
+            return
+        self.canvas.set_canvas_cursor(
+            self.get_pen_cursor(
+                INPAINT_BRUSH_COLOR,
+                self.inpaint_pen.width(),
+                shape=self.inpaintConfigPanel.shape,
+            )
+        )
 
     def on_handchecker_changed(self):
         if self.handTool.isChecked():

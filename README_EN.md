@@ -1,18 +1,29 @@
-> [!IMPORTANT]  
-> **If you're sharing the translated result publicly and no experienced human translator participated in a throughout translating or proofreading, please mark it as machine translation somewhere clear to see.**
+<p align="center">
+  <img
+    width="256"
+    alt="Spinning fox animation"
+    src="https://github.com/user-attachments/assets/fe44e9a6-c7da-4bc5-8421-87fd6c38a0ba"
+  />
+</p>
 
-# BallonTranslator
-[简体中文](/README.md) | English
+<h1 align="center">BallonsTranslator</h1>
 
-Yet another computer-aided comic/manga translation tool powered by deep learning.  
+<p align="center">Yet another computer-aided comic/manga translation tool powered by deep learning.</p>
 
-<img src="https://github.com/user-attachments/assets/2140c402-dda2-47bc-9e7f-83ed41ce78af" div align=center>
+<p align="center">
+  <a href="/README.md">简体中文</a> | English | <a href="/doc/README_RU.md">Русский</a> | <a href="/doc/README_JA.md">日本語</a> | <a href="/doc/README_ES.md">Español</a> | <a href="/doc/README_FR.md">Français</a> | <a href="/doc/README_PT-BR.md">pt-BR</a> | <a href="/doc/README_KO.md">한국어</a> | <a href="/doc/README_ID.md">Indonesia</a> | <a href="/doc/README_VI.md">Tiếng Việt</a>
+</p>
 
-<p align=center>
-preview
+<p align="center">
+  <a href="https://t.me/BallonTranslatorforum"><img src="https://img.shields.io/badge/Telegram-Discussion%20Group-26A5E4?style=flat-square&logo=telegram&logoColor=white" style="vertical-align: middle;" alt="Telegram Group"/></a>
+  &nbsp;&nbsp;|&nbsp;&nbsp;
+  <span style="vertical-align: middle;"><b>QQ Group:</b> <code>719881337</code></span>
 </p>
 
 # Features
+> [!IMPORTANT]
+> **If you're sharing the translated result publicly and no experienced human translator participated in a throughout translating or proofreading, please mark it as machine translation somewhere clear to see.**
+
 * Fully automated translation  
   - Support automatic text-detection, recognition, removal, and translation. Overall performance is dependent upon these modules.
   - Typesetting is based on the formatting estimation of the original text.
@@ -24,34 +35,99 @@ preview
   - Adapted to images with extreme aspect ratio such as webtoons
   
 * Text editing  
-  - Support rich text formatting and [text style presets](https://github.com/dmMaze/BallonsTranslator/pull/311), translated texts can be edited interactively.
-  - Support search & replace
-  - Support export/import to/from word documents
+  - Supports WYSIWYG rich-text editing and [text style presets](https://github.com/dmMaze/BallonsTranslator/pull/311)
+  - Supports a rich set of [text effects](https://github.com/dmMaze/BallonsTranslator/pull/1296) and [text transforms](https://github.com/dmMaze/BallonsTranslator/pull/1238)
+  - Supports find and replace across all text, source text, or translations, and Word document import/export
+
+* <details>
+  <summary><i>Context-aware LLM translation & Glossary</i></summary>
+
+  **Translation history**
+
+  - Set **LLM Context** to **+history** to show `LLMTranslator` examples from earlier completed pages. This can keep names, terminology, and tone more consistent. Continue and selected-range runs can also use eligible earlier pages.
+  - **Token budget** controls how much earlier translated text is included. Newer pages are kept first. The current page, instructions, glossary, and generated reply need additional space. The default is `4096`.
+  - A larger budget gives the model more story context and drops old pages less often, but sends more input and may take longer. Local models may also need substantially more RAM/VRAM. The `4096` default is deliberately conservative; mainstream providers with large context windows, such as DeepSeek, can often use a higher limit. About 70% of the model's context limit is a reasonable upper bound (`90000` for a 128K model).
+  - The history budget also affects prompt caching. While history grows within the budget, consecutive requests keep the same beginning; OpenAI and DeepSeek can reuse these input tokens at a discount and may respond faster. Dropping old pages changes the beginning and resets the cache. A larger budget means fewer resets but sends more history, so it is not guaranteed to cost less.
+
+  The table below is a rough manga-page example using DeepSeek, where cached input tokens cost 10% of regular input tokens. Actual results vary by project, model, and provider.
+
+  | Token budget | Estimated history kept (pages) | Estimated total cost vs. no history |
+  |---:|---:|---:|
+  | `2048` | 3–4 | 1.65× |
+  | `4096` | 6–9 | 1.79× |
+  | `8192` | 12–19 | 2.10× |
+  | `16384` | 23–38 | 2.66× |
+
+  **Reusable glossaries**
+
+  - Set **Glossary File** in the Run dialog to a UTF-8 `.json`, `.txt`, or `.tsv` file. The file is read-only and can be reused across projects.
+  - **Matching** sends only entries whose source terms occur on the relevant page. **All** sends every entry and may use considerably more tokens.
+  - Supported formats include:
+
+    ```text
+    # Sakura-style text
+    source->translation # optional note
+
+    # Tab-separated text
+    source<TAB>translation<TAB>optional note
+    ```
+
+    ```json
+    [
+      {"src": "source", "dst": "translation", "info": "optional note"}
+    ]
+    ```
+
+  - Matching is case-insensitive and literal. Conflicting entries, malformed files, unsupported formats, and missing files stop the translation before an LLM request is sent.
+  - Prior-page context and glossary injection affect only `LLMTranslator`; other translators ignore these settings.
+
+  </details>
+
+* <details>
+  <summary><i>LLM translation with visual context, page summaries, and a project summary</i></summary>
+
+  **Vision**
+
+  When enabled, models with vision support can use images as context for translation.
+
+  **Summaries and memory**
+
+  Each page summary briefly records details relevant to translation, including characters and relationships, the setting, key events, speaker clues, and unresolved references. Memory is a condensed record of the whole project built from accumulated page summaries. When older summaries no longer fit within the context budget, or when the last page finishes processing, the program sends a separate text-only request to merge those summaries into the existing memory. Subsequent translations reuse this condensed record as stable context.
+
+  </details>
 
 # Installation
 
 ## On Windows
-If you use Windows and have access to the Internet:  
-Download Ballonstranslator_win_minium.zip from the release page, unzip it, and run launch_win.bat.  
-Note these provided packages cannot run on Windows 7, Win 7 users need to install [Python 3.8](https://www.python.org/downloads/release/python-3810/) and run the source code.  
-When running from source on Windows, PyTorch/deep learning modules may require the [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe) (Visual Studio 2015-2022; [official download notes](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)). Install or update it if you see errors involving `msvcp140.dll`, `c10.dll`, or `[WinError 1114]`.
+
+**Method A (One-Click Local Environment Setup, requires PowerShell)**:
+The script installs `BallonsTranslator` in the directory where you run it:
+```powershell
+irm https://raw.githubusercontent.com/dmMaze/BallonsTranslator/dev/scripts/install.ps1 | iex
+```
+Or run the following command in the Command Prompt (`cmd.exe`):
+```cmd
+powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/dmMaze/BallonsTranslator/dev/scripts/install.ps1 | iex"
+```
+
+
+**Method B (Download Pre-configured Package)**:
+Download `Ballonstranslator_win_minium.zip` from [GitHub Releases](https://github.com/dmMaze/BallonsTranslator/releases), extract it, and double-click `launch_win.bat` to launch the application.
+
+These methods do not support Windows 7; Windows 7 users must install [Python 3.8](https://www.python.org/downloads/release/python-3810/) manually and run from source.
+
+If you see errors involving `msvcp140.dll`, `c10.dll`, or `[WinError 1114]`, install or update the [Microsoft Visual C++ Redistributable x64](https://aka.ms/vc14/vc_redist.x64.exe) (Visual Studio 2015-2022; [official download notes](https://learn.microsoft.com/en-us/cpp/windows/latest-supported-vc-redist)).
 
 ## macOS / Linux
 
-The Unix installer downloads the latest dev source archive, installs `uv` for the current user if it is not already available, creates a Python 3.12 virtual environment named `.venv`, and installs the core requirements.
-
+The script installs `BallonsTranslator` in the directory where you run it:
 ```bash
 curl -fLO https://raw.githubusercontent.com/dmMaze/BallonsTranslator/dev/scripts/install.sh && chmod +x install.sh && ./install.sh
 ```
 
-If `curl` is not available, download the script with `wget -O ...` instead:
+If `curl` is not available, download the script with `wget -O ...` instead. The app launches automatically after installation; later, use `cd BallonsTranslator && ./launch.sh` to start it again.
 
-
-Run the installer in the directory where you want the `BallonsTranslator` folder created. The app launches automatically after installation; later, use `cd BallonsTranslator && ./launch.sh` to start it again.
-
-The launcher checks core dependencies. When you select modules that need extra libraries, the app will prompt you to install the missing optional dependencies, or you can enable automatic installation in settings. If model downloads fail, download the **data** folder (or the missing files mentioned in the error) from [MEGA](https://mega.nz/folder/gmhmACoD#dkVlZ2nphOkU5-2ACb5dKw) or [Google Drive](https://drive.google.com/drive/folders/1uElIYRLNakJj-YS0Kd3r3HE-wzeEvrWd?usp=sharing) and save it to the corresponding path in the source code folder.  
-
-The software has built-in update checking; see Config pannel -> Startup & Update for details.
+The app checks core dependencies at startup. When you select a module that needs extra libraries, the app will prompt you to install the missing optional dependencies (you can also enable automatic installation in Settings).
 
 
 # Usage

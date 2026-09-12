@@ -1,13 +1,44 @@
 import os.path as osp
 from typing import List, Union
 
-from qtpy.QtWidgets import QMainWindow, QHBoxLayout, QVBoxLayout, QFileDialog, QLabel, QSizePolicy, QToolBar, QMenu, QSpacerItem, QPushButton, QCheckBox, QToolButton
-from qtpy.QtCore import Qt, Signal, QPoint, QEvent, QSize
-from qtpy.QtGui import QMouseEvent, QKeySequence, QActionGroup, QIcon
+from qtpy.QtWidgets import (
+    QCheckBox,
+    QFileDialog,
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QMenu,
+    QPushButton,
+    QSizePolicy,
+    QSpacerItem,
+    QToolButton,
+    QVBoxLayout,
+)
+from qtpy.QtCore import QEvent, QPoint, QSize, Qt, QUrl, Signal
+from qtpy.QtGui import (
+    QActionGroup,
+    QDesktopServices,
+    QIcon,
+    QKeySequence,
+    QMouseEvent,
+)
 
-from .custom_widget import Widget, PaintQSlider, SmallComboBox, ConfigClickableLabel
+from .custom_widget import Widget, PaintQSlider
+from .module_tool_button import ModuleSelectionWidget
 from .misc import themed_icon_path
-from ballontranslator.utils.shared import TITLEBAR_HEIGHT, WINDOW_BORDER_WIDTH, BOTTOMBAR_HEIGHT, LEFTBAR_WIDTH, LEFTBTN_WIDTH
+from .llm_modality import (
+    LLM_MODALITY_IMAGE,
+    LLM_MODALITY_TEXT,
+    LLM_MODALITY_VISION,
+    LLM_MODALITY_VISION_COLOR,
+)
+from ballontranslator.utils.shared import (
+    BOTTOMBAR_HEIGHT,
+    LEFTBAR_WIDTH,
+    LEFTBTN_WIDTH,
+    TITLEBAR_HEIGHT,
+    WINDOW_BORDER_WIDTH,
+)
 from .framelesswindow import FramelessMoveResize
 from ballontranslator.utils.config import pcfg
 from ballontranslator.utils import shared
@@ -58,12 +89,12 @@ class StateChecker(QCheckBox):
 
 class LeftBar(Widget):
     recent_proj_list = []
-    imgTransChecked = Signal()
     configChecked = Signal()
     open_dir = Signal(str)
     open_json_proj = Signal(str)
     save_proj = Signal()
     save_config = Signal()
+    run_imgtrans_clicked = Signal()
     def __init__(self, mainwindow, *args, **kwargs) -> None:
         super().__init__(mainwindow, *args, **kwargs)
         self.mainwindow: QMainWindow = mainwindow
@@ -71,19 +102,19 @@ class LeftBar(Widget):
         padding = (LEFTBAR_WIDTH - LEFTBTN_WIDTH) // 2
         self.setFixedWidth(LEFTBAR_WIDTH)
         self.showPageListLabel = ShowPageListChecker()
+        self.showPageListLabel.setObjectName('ShowPageListChecker')
+        self.showPageListLabel.setToolTip(
+            self.tr('Page List and Context')
+        )
 
         self.globalSearchChecker = QCheckBox()
         self.globalSearchChecker.setObjectName('GlobalSearchChecker')
         self.globalSearchChecker.setToolTip(self.tr('Global Search (Ctrl+G)'))
 
-        self.imgTransChecker = StateChecker('imgtrans')
-        self.imgTransChecker.setObjectName('ImgTransChecker')
-        self.imgTransChecker.checked.connect(self.stateCheckerChanged)
-        
         self.configChecker = StateChecker('config', uncheckable=True)
         self.configChecker.setObjectName('ConfigChecker')
-        self.configChecker.checked.connect(self.stateCheckerChanged)
-        self.configChecker.unchecked.connect(self.stateCheckerChanged)
+        self.configChecker.checked.connect(self.configCheckerChanged)
+        self.configChecker.unchecked.connect(self.configCheckerChanged)
 
         actionOpenFolder = QAction(self.tr("Open Folder ..."), self)
         actionOpenFolder.triggered.connect(self.onOpenFolder)
@@ -114,9 +145,12 @@ class LeftBar(Widget):
         actionImportTranslationTxt = QAction(self.tr("Import translation from TXT/markdown"), self)
         self.import_trans_txt = actionImportTranslationTxt.triggered
 
-        self.recentMenu = QMenu(self.tr("Open Recent"), self)
-        
-        openMenu = QMenu(self)
+        self.openBtn = OpenBtn()
+        self.openBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+
+        openMenu = QMenu(self.openBtn)
+        # Keep submenu ownership aligned with the visual popup chain for Wayland.
+        self.recentMenu = QMenu(self.tr("Open Recent"), openMenu)
         openMenu.addActions([actionOpenFolder, actionOpenProj])
         openMenu.addMenu(self.recentMenu)
         openMenu.addSeparator()
@@ -130,30 +164,23 @@ class LeftBar(Widget):
             actionExportTranslationMD,
             actionImportTranslationTxt,
         ])
-        self.openBtn = OpenBtn()
-        self.openBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
         self.openBtn.setMenu(openMenu)
         self.openBtn.setPopupMode(QToolButton.InstantPopup)
     
-        openBtnToolBar = QToolBar(self)
-        openBtnToolBar.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
-        openBtnToolBar.addWidget(self.openBtn)
-        
-        self.runImgtransBtn = QPushButton()
-        self.runImgtransBtn.setObjectName('RunButton')
-        self.runImgtransBtn.setText(self.tr('Run'))
-        font = self.runImgtransBtn.font()
-        font.setPixelSize(10)
-        self.runImgtransBtn.setFont(font)
-        self.runImgtransBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
-        self.run_imgtrans_clicked = self.runImgtransBtn.clicked
-        self.runImgtransBtn.setFixedSize(LEFTBTN_WIDTH, LEFTBTN_WIDTH)
+        self.runImgtransBtn = QToolButton(self)
+        self.runImgtransBtn.setObjectName('LeftBarRunButton')
+        self.runImgtransBtn.setIcon(QIcon(themed_icon_path('run.svg')))
+        self.runImgtransBtn.setIconSize(QSize(LEFTBTN_WIDTH + 3, LEFTBTN_WIDTH + 3))
+        self.runImgtransBtn.setFixedSize(LEFTBTN_WIDTH + 4, LEFTBTN_WIDTH + 4)
+        self.runImgtransBtn.setToolTip('{} (F5)'.format(self.tr('Run')))
+        self.runImgtransBtn.setAccessibleName(self.tr('Run'))
+        self.runImgtransBtn.setShortcut(QKeySequence('F5'))
+        self.runImgtransBtn.clicked.connect(self.run_imgtrans_clicked.emit)
         
         vlayout = QVBoxLayout(self)
-        vlayout.addWidget(openBtnToolBar)
+        vlayout.addWidget(self.openBtn)
         vlayout.addWidget(self.showPageListLabel)
         vlayout.addWidget(self.globalSearchChecker)
-        vlayout.addWidget(self.imgTransChecker)
         vlayout.addItem(QSpacerItem(0, 0, QSizePolicy.Minimum, QSizePolicy.Expanding))
         vlayout.addWidget(self.configChecker)
         vlayout.addWidget(self.runImgtransBtn)
@@ -249,27 +276,19 @@ class LeftBar(Widget):
         if osp.exists(json_path):
             self.open_json_proj.emit(json_path)
 
-    def stateCheckerChanged(self, checker_type: str):
-        if checker_type == 'imgtrans':
+    def configCheckerChanged(self, _checker_type: str) -> None:
+        if self.configChecker.isChecked():
+            self.configChecked.emit()
+            self.configChecker.blockSignals(True)
             self.configChecker.setChecked(False)
-            self.imgTransChecked.emit()
-        elif checker_type == 'config':
-            if self.configChecker.isChecked():
-                self.imgTransChecker.setChecked(False)
-                self.configChecked.emit()
-            else:
-                self.imgTransChecker.setChecked(True)
+            self.configChecker.blockSignals(False)
                 
-
-    def needleftStackWidget(self) -> bool:
-        return self.showPageListLabel.isChecked() or self.globalSearchChecker.isChecked()
-
 
 class TitleBar(Widget):
 
     closebtn_clicked = Signal()
     display_lang_changed = Signal(str)
-    enable_module = Signal(int, bool)
+    show_module = Signal(int, bool)
 
     def __init__(self, parent, *args, **kwargs) -> None:
         super().__init__(parent, *args, **kwargs)
@@ -316,7 +335,9 @@ class TitleBar(Widget):
         self.viewToolBtn = TitleBarToolBtn(self)
         self.viewToolBtn.setText(self.tr('View'))
 
-        self.displayLanguageMenu = QMenu(self.tr("Display Language"), self)
+        self.viewMenu = viewMenu = QMenu(self.viewToolBtn)
+        # Keep submenu ownership aligned with the visual popup chain for Wayland.
+        self.displayLanguageMenu = QMenu(self.tr("Display Language"), viewMenu)
         self.lang_ac_group = lang_ac_group = QActionGroup(self)
         lang_ac_group.setExclusive(True)
         lang_actions = []
@@ -339,14 +360,29 @@ class TitleBar(Widget):
         self.darkModeAction = darkModeAction = QAction(self.tr('Dark Mode'), self)
         darkModeAction.setCheckable(True)
 
-        self.viewMenu = viewMenu = QMenu(self.viewToolBtn)
+        visibility_specs = (
+            (self.tr('Show Text Detection'), pcfg.show_textdetector_tool),
+            (self.tr('Show OCR'), pcfg.show_ocr_tool),
+            (self.tr('Show Translation'), pcfg.show_translator_tool),
+            (self.tr('Show Inpainting'), pcfg.show_inpainter_tool),
+        )
+        self.moduleVisibilityActions = module_visibility_actions = [
+            QAction(text, self) for text, _ in visibility_specs
+        ]
+        for action, (_, visible) in zip(module_visibility_actions, visibility_specs):
+            action.setCheckable(True)
+            action.setChecked(visible)
+            action.triggered.connect(self.moduleVisibilityStateChanged)
+
+        viewMenu.addAction(darkModeAction)
         viewMenu.addMenu(self.displayLanguageMenu)
+        viewMenu.addSeparator()
+        viewMenu.addActions(module_visibility_actions)
+        viewMenu.addSeparator()
         viewMenu.addActions([drawBoardAction, texteditAction])
         viewMenu.addSeparator()
         viewMenu.addAction(importTextStyles)
         viewMenu.addAction(exportTextStyles)
-        viewMenu.addSeparator()
-        viewMenu.addAction(darkModeAction)
         self.viewToolBtn.setMenu(viewMenu)
         self.viewToolBtn.setPopupMode(QToolButton.InstantPopup)
         self.textedit_trigger = texteditAction.triggered
@@ -368,46 +404,62 @@ class TitleBar(Widget):
         self.prevpage_trigger = prevPageAction.triggered
         self.nextpage_trigger = nextPageAction.triggered
 
-        # 工具菜单
+        # Tools Menu
         self.toolsToolBtn = TitleBarToolBtn(self)
         self.toolsToolBtn.setText(self.tr('Tools'))
         
-        # 区域合并工具
+        # Merge Tool
         mergeToolAction = QAction('区域合并工具', self)
         mergeToolAction.setShortcut(QKeySequence('Ctrl+Shift+M'))
         self.merge_tool_trigger = mergeToolAction.triggered
+
+        # Photoshop Bridge Tool
+        psBridgeAction = QAction(self.tr('Photoshop Bridge'), self)
+        psBridgeAction.setShortcut(QKeySequence('Ctrl+Shift+P'))
+        self.ps_bridge_trigger = psBridgeAction.triggered
+
+        self.path_reorder_action = QAction(self.tr('Path Reorder'), self)
+        self.path_reorder_action.setCheckable(True)
+        self.path_reorder_trigger = self.path_reorder_action.triggered
+
+        fontExclusionAction = QAction(self.tr('Font Exclusion'), self)
+        self.font_exclusion_trigger = fontExclusionAction.triggered
         
         toolsMenu = QMenu(self.toolsToolBtn)
         toolsMenu.addAction(mergeToolAction)
+        toolsMenu.addAction(psBridgeAction)
+        toolsMenu.addAction(self.path_reorder_action)
+        toolsMenu.addSeparator()
+        toolsMenu.addAction(fontExclusionAction)
         self.toolsToolBtn.setMenu(toolsMenu)
         self.toolsToolBtn.setPopupMode(QToolButton.InstantPopup)
 
-        self.runToolBtn = TitleBarToolBtn(self)
-        self.runToolBtn.setText(self.tr('Run'))
-
-        self.stageActions = stageActions = [
-            QAction(self.tr('Enable Text Dection'), self),
-            QAction(self.tr('Enable OCR'), self),
-            QAction(self.tr('Enable Translation'), self),
-            QAction(self.tr('Enable Inpainting'), self)
-        ]
-        for idx, sa in enumerate(stageActions):
-            sa.setCheckable(True)
-            sa.setChecked(pcfg.module.stage_enabled(idx))
-            sa.triggered.connect(self.stageEnableStateChanged)
-
-        runAction = QAction(self.tr('Run'), self)
-        runWoUpdateTextStyle = QAction(self.tr('Run without update textstyle'), self)
-        translatePageAction = QAction(self.tr('Translate page'), self)
-        runMenu = QMenu(self.runToolBtn)
-        runMenu.addActions(stageActions)
-        runMenu.addSeparator()
-        runMenu.addActions([runAction, runWoUpdateTextStyle, translatePageAction])
-        self.runToolBtn.setMenu(runMenu)
-        self.runToolBtn.setPopupMode(QToolButton.InstantPopup)
-        self.run_trigger = runAction.triggered
-        self.run_woupdate_textstyle_trigger = runWoUpdateTextStyle.triggered
-        self.translate_page_trigger = translatePageAction.triggered
+        self.sponsorToolBtn = TitleBarToolBtn(self)
+        self.sponsorToolBtn.setText(self.tr('Sponsor'))
+        self.sponsorToolBtn.setIcon(QIcon(themed_icon_path('heart.svg')))
+        self.sponsorToolBtn.setIconSize(QSize(16, 16))
+        self.sponsorToolBtn.setToolButtonStyle(
+            Qt.ToolButtonStyle.ToolButtonTextBesideIcon
+        )
+        sponsor_menu = QMenu(self.sponsorToolBtn)
+        self.patreonSponsorAction = QAction('Patreon', self)
+        self.patreonSponsorAction.triggered.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl('https://patreon.com/dreMaze')
+            )
+        )
+        self.afdianSponsorAction = QAction(self.tr('Afdian'), self)
+        self.afdianSponsorAction.triggered.connect(
+            lambda _checked=False: QDesktopServices.openUrl(
+                QUrl('https://afdian.com/a/dmMaze')
+            )
+        )
+        sponsor_menu.addActions([
+            self.patreonSponsorAction,
+            self.afdianSponsorAction,
+        ])
+        self.sponsorToolBtn.setMenu(sponsor_menu)
+        self.sponsorToolBtn.setPopupMode(QToolButton.InstantPopup)
 
         self.iconLabel = QLabel(self)
         if not shared.ON_MACOS:
@@ -425,8 +477,8 @@ class TitleBar(Widget):
         hlayout.addWidget(self.editToolBtn)
         hlayout.addWidget(self.viewToolBtn)
         hlayout.addWidget(self.goToolBtn)
-        hlayout.addWidget(self.runToolBtn)
         hlayout.addWidget(self.toolsToolBtn)
+        hlayout.addWidget(self.sponsorToolBtn)
         hlayout.addStretch()
         hlayout.addWidget(self.titleLabel)
         hlayout.addStretch()
@@ -457,14 +509,15 @@ class TitleBar(Widget):
 
         return super().eventFilter(obj, e)
 
-    def stageEnableStateChanged(self):
+    def moduleVisibilityStateChanged(self):
         sender = self.sender()
-        idx= self.stageActions.index(sender)
+        idx = self.moduleVisibilityActions.index(sender)
         checked = sender.isChecked()
-        self.enable_module.emit(idx, checked)
+        self.show_module.emit(idx, checked)
 
     def mouseDoubleClickEvent(self, e: QMouseEvent) -> None:
-        super().mouseDoubleClickEvent(e)
+        if e.button() != Qt.MouseButton.LeftButton:
+            return
         FramelessMoveResize.toggleMaxState(self.mainwindow)
 
     def onMaxBtnClicked(self):
@@ -531,121 +584,6 @@ class TitleBar(Widget):
         self.titleLabel.setText(title)
 
 
-class SmallConfigPutton(QPushButton):
-    pass
-
-
-def cfg_icon() -> QIcon:
-    return QIcon(themed_icon_path('leftbar_config_activate.svg'))
-
-
-class SelectionWithConfigWidget(Widget):
-
-    cfg_clicked = Signal()
-
-    def __init__(self, selector_name: str, add_cfg_btn=True, *args, **kwargs) -> None:
-        super().__init__(*args, **kwargs)
-        label = ConfigClickableLabel(text=selector_name)
-        label.clicked.connect(self.cfg_clicked)
-        
-        self.selector = SmallComboBox()
-
-        self.cfg_btn = None
-        if add_cfg_btn:
-            self.cfg_btn = SmallConfigPutton()
-            self.cfg_btn.clicked.connect(self.cfg_clicked)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label)
-        layout2 = QHBoxLayout()
-        layout2.setSpacing(0)
-        layout2.addWidget(self.selector)
-        layout2.addWidget(self.cfg_btn)
-        layout2.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label)
-        layout.addLayout(layout2)
-
-    def enterEvent(self, event: QEvent) -> None:
-        if self.cfg_btn is not None:
-            self.cfg_btn.setIcon(cfg_icon())
-        return super().enterEvent(event)
-
-    def leaveEvent(self, event: QEvent) -> None:
-        if self.cfg_btn is not None:
-            self.cfg_btn.setIcon(QIcon())
-        return super().leaveEvent(event)
-    
-    def blockSignals(self, block: bool):
-        self.selector.blockSignals(block)
-        super().blockSignals(block)
-    
-    def setSelectedValue(self, value: str, block_signals=True):
-        if block_signals:
-            self.blockSignals(True)
-        self.selector.setCurrentText(value)
-        if block_signals:
-            self.blockSignals(False)
-    
-
-class TranslatorSelectionWidget(Widget):
-
-    cfg_clicked = Signal()
-
-    def __init__(self) -> None:
-        super().__init__()
-        label = ConfigClickableLabel(text=self.tr('Translate'))
-        label.clicked.connect(self.cfg_clicked)
-        label_src = ConfigClickableLabel(text=self.tr('Source'))
-        label_src.clicked.connect(self.cfg_clicked)
-        label_tgt = ConfigClickableLabel(text=self.tr('Target'))
-        label_tgt.clicked.connect(self.cfg_clicked)
-        
-        self.selector = SmallComboBox()
-        self.src_selector = SmallComboBox()
-        self.tgt_selector = SmallComboBox()
-        self.cfg_btn = SmallConfigPutton()
-        self.cfg_btn.clicked.connect(self.cfg_clicked)
-
-        layout = QHBoxLayout(self)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.addWidget(label)
-        layout.addWidget(self.selector)
-        layout.addWidget(label_src)
-        layout.addWidget(self.src_selector)
-        layout.addWidget(label_tgt)
-        layout.addWidget(self.tgt_selector)
-        layout.addWidget(self.cfg_btn)
-        layout.setSpacing(1)
-
-    def enterEvent(self, event: QEvent) -> None:
-        if self.cfg_btn is not None:
-            self.cfg_btn.setIcon(cfg_icon())
-        return super().enterEvent(event)
-
-    def leaveEvent(self, event: QEvent) -> None:
-        if self.cfg_btn is not None:
-            self.cfg_btn.setIcon(QIcon())
-        return super().leaveEvent(event)
-    
-    def blockSignals(self, block: bool):
-        self.src_selector.blockSignals(block)
-        self.tgt_selector.blockSignals(block)
-        self.selector.blockSignals(block)
-        super().blockSignals(block)
-    
-    def setTranslatorMetadata(self, name: str, supported_src_list, supported_tgt_list, lang_source: str, lang_target: str):
-        # Metadata can come from ModuleSpec before the translator is imported.
-        self.blockSignals(True)
-        self.src_selector.clear()
-        self.tgt_selector.clear()
-        self.src_selector.addItems(supported_src_list)
-        self.tgt_selector.addItems(supported_tgt_list)
-        self.selector.setCurrentText(name)
-        self.src_selector.setCurrentText(lang_source)
-        self.tgt_selector.setCurrentText(lang_target)
-        self.blockSignals(False)
-
 
 
 class BottomBar(Widget):
@@ -660,10 +598,18 @@ class BottomBar(Widget):
         self.setMouseTracking(True)
         self.mainwindow = mainwindow
         
-        self.textdet_selector = SelectionWithConfigWidget(self.tr('Text Detector'))
-        self.ocr_selector = SelectionWithConfigWidget(self.tr('OCR'))
-        self.inpaint_selector = SelectionWithConfigWidget(self.tr('Inpaint'))
-        self.trans_selector = TranslatorSelectionWidget()
+        self.textdet_selector = ModuleSelectionWidget(
+            self.tr('Text Detector'),
+            'textdetect_activate.svg',
+            icon_color=LLM_MODALITY_VISION_COLOR,
+        )
+        self.ocr_selector = ModuleSelectionWidget(self.tr('OCR'), 'small_ocr.svg', LLM_MODALITY_VISION)
+        self.inpaint_selector = ModuleSelectionWidget(self.tr('Inpaint'), 'drawingtools_inpaint.svg', LLM_MODALITY_IMAGE)
+        self.trans_selector = ModuleSelectionWidget(
+            self.tr('Translator'),
+            'bottombar_translate_activate.svg',
+            LLM_MODALITY_TEXT,
+        )
 
         self.hlayout = QHBoxLayout(self)
         self.paintChecker = QCheckBox()
